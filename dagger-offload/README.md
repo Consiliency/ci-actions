@@ -89,6 +89,23 @@ whole thing optional-by-default (see below) and fail-closed once eligible —
 do not gate the hosted step on `failure()` or `always()`; it must only ever
 run when `eligible != 'true'`, never as a fallback from a failed offload.
 
+## Why this repo is public
+
+The fleet this action serves spans **four separate GitHub owners**:
+`Consiliency` (org), `ViperJuice` (personal user account),
+`Frontierstrategies-ai` (org), and `regenesis-ai` (org). GitHub does not let a
+workflow in one owner reference an action in a **private** repo owned by a
+different owner — cross-owner `uses:` only resolves against a public repo (or
+one covered by the same enterprise/org, which doesn't apply across these four
+independent owners). So `Consiliency/ci-actions` is public.
+
+This is safe: `action.yml` contains no secrets. The real access control is
+the ephemeral `TS_AUTHKEY` each caller supplies at the call site, plus
+tailnet ACL membership. The action only references non-secret names (host
+`ai`, user `ci-docker`, tag `tag:ci-gp`) — infra topology, not credentials.
+Public visibility means anyone can *read* this action; nobody can *use* your
+compute without your own key.
+
 ## Prerequisites per adopting repo
 
 1. **A containerised, `dagger call`-able gate.** Your `command` needs a code
@@ -97,21 +114,27 @@ run when `eligible != 'true'`, never as a fallback from a failed offload.
    rather than a local `npm test`/equivalent. See
    `governed-pipeline`'s `scripts/agent-validation.mjs` (`daggerRemoteEnv()`)
    for the reference implementation — it's a small, portable pattern to copy.
-2. **`TS_AUTHKEY` available.** Recommended: an **org-level** secret with
-   `visibility: all` (Consiliency already runs this way — `TS_AUTHKEY` is set
-   once at the org level and every repo, including new ones, inherits it with
-   no per-repo secret to provision). If you'd rather scope it per-repo,
-   a repo secret named `TS_AUTHKEY` works identically.
+2. **`TS_AUTHKEY` available — the exact mechanism depends on which of the
+   four owners your repo lives in:**
+   - **`Consiliency`, `Frontierstrategies-ai`, `regenesis-ai` (orgs):** set
+     `TS_AUTHKEY` once as an **org-level** secret with `visibility: all`
+     (Consiliency already runs this way). Every repo in that org, including
+     new ones, inherits it automatically — no per-repo secret to provision.
+   - **`ViperJuice` (personal user account):** GitHub personal accounts
+     don't have org-level/fleet-wide secrets. Provision a **per-repo**
+     `TS_AUTHKEY` secret on each repo under this account that adopts the
+     action (`gh secret set TS_AUTHKEY -R ViperJuice/<repo>`). This is the
+     one owner where "adopt by reference" still means a manual secret step
+     per repo.
 3. **The shared `tag:ci-gp` ACL grant** (or your own tag) already wired on
    your tailnet, granting that tag SSH access to your remote host's docker
    tag (e.g. `tag:ai-docker:22`) — see governed-pipeline PR #68's
    description for the exact ACL policy block. This is a one-time,
    fleet-wide setup; you don't redo it per repo, only per new remote host.
-4. **This repo's Actions access.** `Consiliency/ci-actions` has its
-   repository Actions access level set to `organization`, so any repo in the
-   `Consiliency` org can already reference
-   `uses: Consiliency/ci-actions/dagger-offload@<sha>` without further
-   settings changes.
+4. **No repo-visibility settings to configure on your side.** Because
+   `Consiliency/ci-actions` is public, any repo under any of the four owners
+   can already reference `uses: Consiliency/ci-actions/dagger-offload@<sha>`
+   with no Actions-access settings change of its own.
 
 ## Optional-by-default (nobody is blocked by lacking tailnet access)
 
