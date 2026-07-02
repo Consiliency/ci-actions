@@ -1,0 +1,141 @@
+name: "Dagger CI offload"
+description: >-
+  Offload a heavy, containerised gate command to a Tailscale-reachable
+  Docker host (e.g. a fleet member's rootless engine) instead of running it
+  on the GitHub-hosted runner. Extracted from Consiliency/governed-pipeline
+  PR #68 (the CI-offload pilot), proven live/E2E on that repo. Fail-closed
+  by construction: if the remote host is unreachable, this action fails —
+  it never falls back to a silent local run.
+
+inputs:
+  command:
+    description: >-
+      The gate command to run once the offload environment is set up (e.g.
+      "npm run agent:gate"). Must be a command whose containerised path
+      reads AGENT_DAGGER / AGENT_REMOTE_HOST (or DOCKER_HOST directly) to
+      route its `dagger` calls at the remote engine — see the README.
+    required: true
+  eligible:
+    description: >-
+      String "true"/"false" computed by the CALLER workflow (trust gate +
+      secret presence). This action performs the offload when "true" and
+      no-ops (every step skipped) when anything else. Keeping this
+      computation in the caller, not here, keeps the trust decision
+      auditable per-repo instead of buried in a shared action.
+    required: true
+  remote-host:
+    description: Tailnet hostname of the Docker engine to offload to.
+    required: false
+    default: "ai"
+  dagger-version:
+    description: Pinned dagger CLI version (must match the remote engine).
+    required: false
+    default: "0.21.7"
+  ci-tag:
+    description: Tailscale ACL tag applied to this ephemeral CI node.
+    required: false
+    default: "tag:ci-gp"
+  ssh-user:
+    description: Docker-scoped OS user on the remote host (never the default login).
+    required: false
+    default: "ci-docker"
+  ts-authkey:
+    description: >-
+      Tailscale auth key (pass `secrets.TS_AUTHKEY` from the caller — never
+      hardcode). Should be ephemeral + reusable + scoped to `ci-tag`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Trusted event + TS_AUTHKEY present (decided by the caller and passed
+    # in as `eligible`): join the tailnet as a tagged node so this runner
+    # can reach the remote host, and only it — see the Tailscale ACL grant
+    # in the adopter README. "Ephemeral" is a property of the auth key
+    # itself (mint it with the Ephemeral flag set); the coordination server
+    # removes the node automatically when the job ends.
+    - name: Connect to tailnet
+      if: inputs.eligible == 'true'
+      uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888 # v4.1.3
+      with:
+        authkey: ${{ inputs.ts-authkey }}
+        tags: ${{ inputs.ci-tag }}
+
+    # SSH to the remote host as the docker-scoped user (never the default
+    # login mapping) with non-interactive host-key acceptance — a fresh
+    # runner has an empty known_hosts, and BatchMode makes any prompt (host
+    # key, password) a hard failure instead of a hang.
+    - name: Configure SSH for remote host
+      if: inputs.eligible == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh
+        {
+          echo "Host ${{ inputs.remote-host }}"
+          echo "  User ${{ inputs.ssh-user }}"
+          echo "  StrictHostKeyChecking accept-new"
+          echo "  BatchMode yes"
+          echo "  ConnectTimeout 10"
+        } >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+
+    # Pin the dagger CLI to the version already running on the remote
+    # engine — a version-skewed CLI/engine pair is the coverage-drift risk
+    # the compute-offload design flagged explicitly.
+    - name: Install dagger CLI (pinned)
+      if: inputs.eligible == 'true'
+      shell: bash
+      env:
+        BIN_DIR: /home/runner/.dagger-bin
+        DAGGER_VERSION: ${{ inputs.dagger-version }}
+      run: |
+        set -euo pipefail
+        curl -fsSL https://dl.dagger.io/dagger/install.sh | sh
+        echo "$BIN_DIR" >> "$GITHUB_PATH"
+
+    # FAIL-CLOSED AVAILABILITY: this must be a hard failure, never a skip.
+    # If the remote host/tailnet is unreachable or misconfigured, this step
+    # fails — before the gate step — and the offloaded gate step below
+    # never runs (a failed composite `run` step stops the action, which
+    # fails the calling job's step). There is no code path that turns an
+    # unreachable remote host into a green result. Re-verified empirically
+    # under composite execution — see the adopter README.
+    - name: Preflight — verify remote Docker engine is reachable
+      if: inputs.eligible == 'true'
+      shell: bash
+      env:
+        DOCKER_HOST: ssh://${{ inputs.remote-host }}
+      run: |
+        set -euo pipefail
+        echo "Probing $DOCKER_HOST ..."
+        docker -H "$DOCKER_HOST" version
+        dagger version
+
+    # Offloaded: AGENT_DAGGER=1 + a present dagger CLI routes a
+    # dagger-aware gate command through `dagger call ...`;
+    # AGENT_REMOTE_HOST points that dagger subprocess at the remote engine
+    # (DOCKER_HOST=ssh://<remote-host>, resolved via the SSH config step
+    # above). This runs the containerised gate, not any local fallback gate
+    # — see the README's coverage-parity note.
+    #
+    # `command -v dagger` is a belt-and-suspenders assertion: gate scripts
+    # that implement the AGENT_REMOTE_HOST convention (see
+    # governed-pipeline's daggerRemoteEnv()) typically degrade silently to
+    # a local run if the CLI is missing, by design, for the opt-in local
+    # case. On THIS path that silent degrade would mean "no offload
+    # happened" reads as a green, unremarked local run instead of a
+    # failure. Refuse to let that happen.
+    - name: Run offloaded command
+      if: inputs.eligible == 'true'
+      shell: bash
+      env:
+        AGENT_DAGGER: "1"
+        AGENT_REMOTE_HOST: ${{ inputs.remote-host }}
+      run: |
+        set -euo pipefail
+        command -v dagger >/dev/null || {
+          echo "dagger CLI missing on the eligible/offload path — refusing to silently fall back to a local run" >&2
+          exit 1
+        }
+        ${{ inputs.command }}
