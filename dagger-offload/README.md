@@ -146,5 +146,20 @@ propagates. This was re-tested empirically, not assumed:
   action step skipped, the hosted step ran, job green — the intended no-op
   behavior when offload isn't eligible.
 
-See the workflow run logs linked from the extraction PR/report for the exact
-run IDs and step conclusions.
+Concrete run (branch `test/fail-closed-proof`, deleted after capture — see
+`.github/workflows/failclosed-proof.yml` in git history at commit
+`e5dedeb`): https://github.com/Consiliency/ci-actions/actions/runs/28619246704
+
+- Job `unreachable-host-must-fail-closed` → conclusion `failure`. Tailscale
+  connected successfully (real org `TS_AUTHKEY`); the `docker -H
+  ssh://nonexistent-host-ci-failclosed-proof.invalid version` preflight step
+  failed on `ssh: Could not resolve hostname ...: Name or service not
+  known`, exit code 1. The `Gate (hosted fallback — must be SKIPPED, never
+  run)` step's conclusion was `skipped`. Job conclusion: `failure`.
+- Job `ineligible-must-noop-and-use-hosted` → conclusion `success`. The
+  `dagger-offload` action's every internal step was `skipped` (input
+  `eligible: 'false'`); the hosted-fallback step ran and printed its
+  expected message. Job conclusion: `success`.
+
+No false-green: the offload path's failure never let the hosted step run,
+and it never reads as a passing job.
