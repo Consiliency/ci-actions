@@ -36,7 +36,9 @@ inputs:
       flips the CLI on the next run with no change here. When no engine
       container is running on the host, "auto" installs the latest release
       and the CLI provisions that engine on first use. An explicit version
-      (e.g. "0.21.7") disables the derivation and is used as-is.
+      (e.g. "0.21.7") disables the derivation, but is refused when an engine
+      of a different version is running on the host — installing it would
+      evict that engine.
     required: false
     default: "auto"
   ci-tag:
@@ -111,13 +113,29 @@ runs:
         DOCKER_HOST: ssh://${{ inputs.remote-host }}
       run: |
         set -euo pipefail
+        # One name per line; only names of the engine's own shape survive the
+        # sed, so nothing from the host can reach the installer or the step
+        # output except a version string.
+        running="$(docker -H "$DOCKER_HOST" ps --filter status=running --format '{{.Names}}' \
+          | sed -n 's/^dagger-engine-v\([0-9][0-9A-Za-z.+-]*\)$/\1/p')"
+        count=0
+        if [ -n "$running" ]; then count="$(printf '%s\n' "$running" | wc -l)"; fi
+        if [ "$count" -gt 1 ]; then
+          # Whichever CLI we install evicts the engines it does not match, and
+          # every one of these may have a gate on it. Ambiguous: refuse.
+          echo "more than one dagger engine is running on $DOCKER_HOST; refusing to pick one (the CLI would evict the others):" >&2
+          printf '  dagger-engine-v%s\n' $running >&2
+          exit 1
+        fi
         if [ "$REQUESTED" != "auto" ]; then
+          if [ -n "$running" ] && [ "$running" != "$REQUESTED" ]; then
+            echo "dagger CLI version pinned to $REQUESTED but the engine running on $DOCKER_HOST is $running; refusing (installing $REQUESTED would evict that engine)" >&2
+            exit 1
+          fi
           echo "dagger CLI version pinned explicitly: $REQUESTED"
           echo "version=$REQUESTED" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        running="$(docker -H "$DOCKER_HOST" ps --filter status=running --format '{{.Names}}' \
-          | sed -n 's/^dagger-engine-v\([0-9][0-9A-Za-z.+-]*\)$/\1/p' | sort -V | tail -n 1)"
         if [ -n "$running" ]; then
           echo "dagger CLI version derived from the engine running on $DOCKER_HOST: $running"
         else

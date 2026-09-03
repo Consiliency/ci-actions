@@ -154,11 +154,18 @@ version. The CLI is a pure function of the host's engine state:
 - **Upgrading the engine** is an operator step on the host and needs no
   change in any adopting repo. Do it when no gate is running there (the
   GC above kills a live one): run a CLI of the target version once against
-  the host — e.g. `DAGGER_VERSION=<X> sh -c "$(curl -fsSL
+  the host with a command that actually connects to the engine — e.g.
+  `DAGGER_VERSION=<X> sh -c "$(curl -fsSL
   https://dl.dagger.io/dagger/install.sh)"` and then
-  `DOCKER_HOST=ssh://<host> dagger version` — and it provisions
-  `dagger-engine-v<X>` and removes the old one. Every subsequent run of
-  this action derives `<X>`.
+  `DOCKER_HOST=ssh://<host> dagger core version` — and it provisions
+  `dagger-engine-v<X>` and removes the old one. (`dagger version` alone
+  does NOT connect; it only prints the CLI's own version.) Confirm with
+  `docker -H ssh://<host> ps --filter name=dagger-engine`. Every
+  subsequent run of this action derives `<X>`.
+- **More than one engine running** (only possible transiently, or under
+  `DAGGER_LEAVE_OLD_ENGINE`): ambiguous — whichever CLI is installed
+  evicts the others, and each may have a gate on it — so the action
+  refuses and lists them. Remove the stale one on the host.
 - **No engine running** (fresh host, after a prune): `auto` installs the
   latest release and the CLI provisions that engine on first use; later
   runs derive it. This is the only path on which the version is not read
@@ -167,8 +174,11 @@ version. The CLI is a pure function of the host's engine state:
   with `DOCKER_HOST=ssh://<host>` — must match the running engine too, for
   the same reason. Keep local CLIs at the host's engine version.
 
-Pass an explicit `dagger-version: "0.21.7"` to disable the derivation; then
-you own keeping it equal to the host's engine.
+Pass an explicit `dagger-version: "0.21.7"` to disable the derivation. The
+action still reads the host and refuses an explicit version that differs
+from the running engine — installing it would evict that engine — so an
+explicit pin can only ever equal the host's engine or provision a host
+that has none.
 
 ## Optional-by-default (nobody is blocked by lacking tailnet access)
 
