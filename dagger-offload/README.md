@@ -71,8 +71,9 @@ jobs:
           remote-host: ai
           ts-authkey: ${{ secrets.TS_AUTHKEY }}
           # dagger-version / ci-tag / ssh-user: defaults match the fleet
-          # convention (0.21.7 / tag:ci-gp / ci-docker) — override only if
-          # your remote host differs.
+          # convention (auto / tag:ci-gp / ci-docker) — override only if
+          # your remote host differs. "auto" = the engine version already
+          # running on the remote host (see below).
 
       - name: Gate (hosted)
         if: steps.elig.outputs.eligible != 'true'
@@ -135,6 +136,49 @@ compute without your own key.
    `Consiliency/ci-actions` is public, any repo under any of the four owners
    can already reference `uses: Consiliency/ci-actions/dagger-offload@<sha>`
    with no Actions-access settings change of its own.
+
+## Dagger CLI version: derived from the remote engine
+
+The dagger CLI's docker provisioner starts an engine container named for
+**its own** version (`dagger-engine-v<X>`) and removes every other
+`dagger-engine-*` container it finds on the Docker host. A CLI that does not
+match the engine already running there therefore does not just skew
+coverage — it kills that engine (and any gate mid-flight on it, from any
+caller) and provisions its own. A hardcoded CLI pin turns every engine
+upgrade on the host into a CI outage until every adopter re-pins.
+
+So `dagger-version` defaults to `auto`: the action lists the running
+`dagger-engine-v*` container on `remote-host` and installs exactly that CLI
+version. The CLI is a pure function of the host's engine state:
+
+- **Upgrading the engine** is an operator step on the host and needs no
+  change in any adopting repo. Do it when no gate is running there (the
+  GC above kills a live one): run a CLI of the target version once against
+  the host with a command that actually connects to the engine — e.g.
+  `DAGGER_VERSION=<X> sh -c "$(curl -fsSL
+  https://dl.dagger.io/dagger/install.sh)"` and then
+  `DOCKER_HOST=ssh://<host> dagger core version` — and it provisions
+  `dagger-engine-v<X>` and removes the old one. (`dagger version` alone
+  does NOT connect; it only prints the CLI's own version.) Confirm with
+  `docker -H ssh://<host> ps --filter name=dagger-engine`. Every
+  subsequent run of this action derives `<X>`.
+- **More than one engine running** (only possible transiently, or under
+  `DAGGER_LEAVE_OLD_ENGINE`): ambiguous — whichever CLI is installed
+  evicts the others, and each may have a gate on it — so the action
+  refuses and lists them. Remove the stale one on the host.
+- **No engine running** (fresh host, after a prune): `auto` installs the
+  latest release and the CLI provisions that engine on first use; later
+  runs derive it. This is the only path on which the version is not read
+  from the host, and the step log says so.
+- **Any other CLI that reaches the host** — a developer's local `dagger`
+  with `DOCKER_HOST=ssh://<host>` — must match the running engine too, for
+  the same reason. Keep local CLIs at the host's engine version.
+
+Pass an explicit `dagger-version: "0.21.7"` to disable the derivation. The
+action still reads the host and refuses an explicit version that differs
+from the running engine — installing it would evict that engine — so an
+explicit pin can only ever equal the host's engine or provision a host
+that has none.
 
 ## Optional-by-default (nobody is blocked by lacking tailnet access)
 

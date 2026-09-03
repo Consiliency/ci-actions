@@ -28,9 +28,19 @@ inputs:
     required: false
     default: "ai"
   dagger-version:
-    description: Pinned dagger CLI version (must match the remote engine).
+    description: >-
+      Dagger CLI version to install on the runner. The CLI must match the
+      engine running on the remote host, so the default "auto" derives it
+      from that host: the version of the `dagger-engine-v<X>` container
+      currently running there. An operator upgrading the remote engine then
+      flips the CLI on the next run with no change here. When no engine
+      container is running on the host, "auto" installs the latest release
+      and the CLI provisions that engine on first use. An explicit version
+      (e.g. "0.21.7") disables the derivation, but is refused when an engine
+      of a different version is running on the host — installing it would
+      evict that engine.
     required: false
-    default: "0.21.7"
+    default: "auto"
   ci-tag:
     description: Tailscale ACL tag applied to this ephemeral CI node.
     required: false
@@ -80,17 +90,70 @@ runs:
         } >> ~/.ssh/config
         chmod 600 ~/.ssh/config
 
-    # Pin the dagger CLI to the version already running on the remote
-    # engine — a version-skewed CLI/engine pair is the coverage-drift risk
-    # the compute-offload design flagged explicitly.
-    - name: Install dagger CLI (pinned)
+    # Resolve the dagger CLI version to the engine already running on the
+    # remote host. The dagger CLI's docker provisioner starts an engine
+    # container named for ITS OWN version and removes every other
+    # `dagger-engine-*` container it finds, so a CLI that does not match the
+    # running engine does not merely skew coverage (the risk the
+    # compute-offload design flagged): it kills the running engine — and
+    # any gate mid-flight on it — and provisions its own. Deriving the
+    # version from the host makes the CLI a pure function of the engine
+    # state, so an engine upgrade never breaks this action and this action
+    # never downgrades the engine.
+    #
+    # Reachability failures here are hard failures (set -e on the docker
+    # call), before the gate step — the same fail-closed posture as the
+    # preflight below.
+    - name: Resolve dagger CLI version
+      id: dagger-version
+      if: inputs.eligible == 'true'
+      shell: bash
+      env:
+        REQUESTED: ${{ inputs.dagger-version }}
+        DOCKER_HOST: ssh://${{ inputs.remote-host }}
+      run: |
+        set -euo pipefail
+        # One name per line; only names of the engine's own shape survive the
+        # sed, so nothing from the host can reach the installer or the step
+        # output except a version string.
+        running="$(docker -H "$DOCKER_HOST" ps --filter status=running --format '{{.Names}}' \
+          | sed -n 's/^dagger-engine-v\([0-9][0-9A-Za-z.+-]*\)$/\1/p')"
+        count=0
+        if [ -n "$running" ]; then count="$(printf '%s\n' "$running" | wc -l)"; fi
+        if [ "$count" -gt 1 ]; then
+          # Whichever CLI we install evicts the engines it does not match, and
+          # every one of these may have a gate on it. Ambiguous: refuse.
+          echo "more than one dagger engine is running on $DOCKER_HOST; refusing to pick one (the CLI would evict the others):" >&2
+          printf '  dagger-engine-v%s\n' $running >&2
+          exit 1
+        fi
+        if [ "$REQUESTED" != "auto" ]; then
+          if [ -n "$running" ] && [ "$running" != "$REQUESTED" ]; then
+            echo "dagger CLI version pinned to $REQUESTED but the engine running on $DOCKER_HOST is $running; refusing (installing $REQUESTED would evict that engine)" >&2
+            exit 1
+          fi
+          echo "dagger CLI version pinned explicitly: $REQUESTED"
+          echo "version=$REQUESTED" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -n "$running" ]; then
+          echo "dagger CLI version derived from the engine running on $DOCKER_HOST: $running"
+        else
+          echo "no dagger-engine-v* container is running on $DOCKER_HOST; installing the latest release (it will provision that engine on first use)"
+        fi
+        echo "version=$running" >> "$GITHUB_OUTPUT"
+
+    # DAGGER_VERSION empty means "latest" to the installer (the no-engine
+    # fallback above); anything else is installed exactly.
+    - name: Install dagger CLI
       if: inputs.eligible == 'true'
       shell: bash
       env:
         BIN_DIR: /home/runner/.dagger-bin
-        DAGGER_VERSION: ${{ inputs.dagger-version }}
+        DAGGER_VERSION: ${{ steps.dagger-version.outputs.version }}
       run: |
         set -euo pipefail
+        if [ -z "$DAGGER_VERSION" ]; then unset DAGGER_VERSION; fi
         curl -fsSL https://dl.dagger.io/dagger/install.sh | sh
         echo "$BIN_DIR" >> "$GITHUB_PATH"
 
