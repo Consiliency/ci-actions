@@ -74,12 +74,14 @@ inputs:
 runs:
   using: composite
   steps:
-    # Trusted event + TS_AUTHKEY present (decided by the caller and passed
+    # Trusted event + tailnet credential present (decided by the caller and passed
     # in as `eligible`): join the tailnet as a tagged node so this runner
     # can reach the remote host, and only it — see the Tailscale ACL grant
-    # in the adopter README. "Ephemeral" is a property of the auth key
-    # itself (mint it with the Ephemeral flag set); the coordination server
-    # removes the node automatically when the job ends.
+    # in the adopter README. With an OAuth client, tailscale/github-action
+    # mints an ephemeral, pre-approved key for `ci-tag` on every run (the
+    # client's tags must include `ci-tag`). With a legacy auth key,
+    # "ephemeral" is a property of the key itself. Either way the
+    # coordination server removes the node when the job ends.
     # Exactly one credential path: both OAuth inputs, or the legacy auth key.
     # A half-configured OAuth pair is a hard failure, never a silent fallback.
     - name: Check tailnet credentials

@@ -27,7 +27,9 @@ the same file that owns your CI trust boundary:
     REF: ${{ github.ref }}
     PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
     REPO: ${{ github.repository }}
-    TS_CRED_SET: ${{ secrets.TS_OAUTH_SECRET != '' || secrets.TS_AUTHKEY != '' }}
+    # Key eligibility on the credential you actually pass below (OAuth here;
+    # use secrets.TS_AUTHKEY instead if you pass the legacy ts-authkey).
+    TS_CRED_SET: ${{ secrets.TS_OAUTH_SECRET != '' }}
   run: |
     trusted=false
     if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
