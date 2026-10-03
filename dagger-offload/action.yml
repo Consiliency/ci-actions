@@ -49,26 +49,65 @@ inputs:
     description: Docker-scoped OS user on the remote host (never the default login).
     required: false
     default: "ci-docker"
+  ts-oauth-client-id:
+    description: >-
+      Tailscale OAuth client ID (pass `secrets.TS_OAUTH_CLIENT_ID`). Preferred
+      over `ts-authkey`: the client has scope `auth_keys` and the `ci-tag` tag,
+      never expires, and tailscale/github-action mints a fresh ephemeral,
+      pre-approved key from it on every run. Give both OAuth inputs, or
+      `ts-authkey`.
+    required: false
+    default: ""
+  ts-oauth-secret:
+    description: Tailscale OAuth client secret (pass `secrets.TS_OAUTH_SECRET`).
+    required: false
+    default: ""
   ts-authkey:
     description: >-
-      Tailscale auth key (pass `secrets.TS_AUTHKEY` from the caller — never
-      hardcode). Should be ephemeral + reusable + scoped to `ci-tag`.
-    required: true
+      Legacy: a Tailscale auth key (pass `secrets.TS_AUTHKEY` — never
+      hardcode), ephemeral + reusable + scoped to `ci-tag`. Auth keys expire
+      after at most 90 days, which silently breaks every offloaded run; use
+      the OAuth inputs instead. Ignored when the OAuth inputs are given.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
-    # Trusted event + TS_AUTHKEY present (decided by the caller and passed
+    # Trusted event + tailnet credential present (decided by the caller and passed
     # in as `eligible`): join the tailnet as a tagged node so this runner
     # can reach the remote host, and only it — see the Tailscale ACL grant
-    # in the adopter README. "Ephemeral" is a property of the auth key
-    # itself (mint it with the Ephemeral flag set); the coordination server
-    # removes the node automatically when the job ends.
+    # in the adopter README. With an OAuth client, tailscale/github-action
+    # mints an ephemeral, pre-approved key for `ci-tag` on every run (the
+    # client's tags must include `ci-tag`). With a legacy auth key,
+    # "ephemeral" is a property of the key itself. Either way the
+    # coordination server removes the node when the job ends.
+    # Exactly one credential path: both OAuth inputs, or the legacy auth key.
+    # A half-configured OAuth pair is a hard failure, never a silent fallback.
+    - name: Check tailnet credentials
+      if: inputs.eligible == 'true'
+      shell: bash
+      env:
+        HAS_ID: ${{ inputs.ts-oauth-client-id != '' }}
+        HAS_SECRET: ${{ inputs.ts-oauth-secret != '' }}
+        HAS_KEY: ${{ inputs.ts-authkey != '' }}
+      run: |
+        set -euo pipefail
+        if [ "$HAS_ID" != "$HAS_SECRET" ]; then
+          echo "::error::dagger-offload: give both ts-oauth-client-id and ts-oauth-secret, or neither"; exit 1
+        fi
+        if [ "$HAS_ID" = false ] && [ "$HAS_KEY" = false ]; then
+          echo "::error::dagger-offload: no tailnet credential (ts-oauth-client-id/ts-oauth-secret or ts-authkey)"; exit 1
+        fi
+        [ "$HAS_ID" = true ] && echo "tailnet credential: OAuth client" || echo "tailnet credential: legacy auth key"
+
     - name: Connect to tailnet
       if: inputs.eligible == 'true'
       uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888 # v4.1.3
       with:
-        authkey: ${{ inputs.ts-authkey }}
+        oauth-client-id: ${{ inputs.ts-oauth-client-id }}
+        oauth-secret: ${{ inputs.ts-oauth-secret }}
+        authkey: ${{ inputs.ts-oauth-secret == '' && inputs.ts-authkey || '' }}
         tags: ${{ inputs.ci-tag }}
 
     # SSH to the remote host as the docker-scoped user (never the default
