@@ -27,7 +27,7 @@ the same file that owns your CI trust boundary:
     REF: ${{ github.ref }}
     PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
     REPO: ${{ github.repository }}
-    TS_AUTHKEY_SET: ${{ secrets.TS_AUTHKEY != '' }}
+    TS_CRED_SET: ${{ secrets.TS_OAUTH_SECRET != '' || secrets.TS_AUTHKEY != '' }}
   run: |
     trusted=false
     if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
@@ -37,7 +37,7 @@ the same file that owns your CI trust boundary:
       trusted=true
     fi
     eligible=false
-    if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ]; then
+    if [ "$trusted" = "true" ] && [ "$TS_CRED_SET" = "true" ]; then
       eligible=true
     fi
     echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
@@ -45,7 +45,7 @@ the same file that owns your CI trust boundary:
 
 `trusted` means: push to `main`, or a `pull_request` whose head repo is your
 own repo (never a fork). GitHub already withholds secrets from fork-PR runs,
-so an absent `TS_AUTHKEY` independently forces forks onto the hosted path
+so an absent tailnet credential independently forces forks onto the hosted path
 even if the trust check were ever wrong.
 
 ## Adopter snippet
@@ -69,7 +69,9 @@ jobs:
           command: "npm run agent:gate"
           eligible: ${{ steps.elig.outputs.eligible }}
           remote-host: ai
-          ts-authkey: ${{ secrets.TS_AUTHKEY }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          # legacy alternative (expires every <=90 days): ts-authkey: ${{ secrets.TS_AUTHKEY }}
           # dagger-version / ci-tag / ssh-user: defaults match the fleet
           # convention (auto / tag:ci-gp / ci-docker) — override only if
           # your remote host differs. "auto" = the engine version already
@@ -101,7 +103,8 @@ one covered by the same enterprise/org, which doesn't apply across these four
 independent owners). So `Consiliency/ci-actions` is public.
 
 This is safe: `action.yml` contains no secrets. The real access control is
-the ephemeral `TS_AUTHKEY` each caller supplies at the call site, plus
+the tailnet credential each caller supplies at the call site (an OAuth
+client that can only mint `tag:ci-gp` keys, or a legacy auth key), plus
 tailnet ACL membership. The action only references non-secret names (host
 `ai`, user `ci-docker`, tag `tag:ci-gp`) — infra topology, not credentials.
 Public visibility means anyone can *read* this action; nobody can *use* your
@@ -115,16 +118,23 @@ compute without your own key.
    rather than a local `npm test`/equivalent. See
    `governed-pipeline`'s `scripts/agent-validation.mjs` (`daggerRemoteEnv()`)
    for the reference implementation — it's a small, portable pattern to copy.
-2. **`TS_AUTHKEY` available — the exact mechanism depends on which of the
-   four owners your repo lives in:**
+2. **A tailnet credential available.** Preferred: a Tailscale **OAuth client**
+   with scope `auth_keys` (write) and tag `tag:ci-gp`, stored as
+   `TS_OAUTH_CLIENT_ID` + `TS_OAUTH_SECRET`. It does not expire; the action
+   mints a fresh ephemeral, pre-approved key from it on every run. A plain
+   auth key (`TS_AUTHKEY`) still works, but expires after at most 90 days and
+   then fails every offloaded run with `invalid key` (as happened on
+   2026-10-01). Where to store the secrets depends on which of the four owners
+   your repo lives in:
    - **`Consiliency`, `Frontierstrategies-ai`, `regenesis-ai` (orgs):** set
-     `TS_AUTHKEY` once as an **org-level** secret with `visibility: all`
+     the secrets once at **org level** with `visibility: all` (note
+     `gh secret set --org` defaults to `private` — pass `--visibility all`)
      (Consiliency already runs this way). Every repo in that org, including
      new ones, inherits it automatically — no per-repo secret to provision.
    - **`ViperJuice` (personal user account):** GitHub personal accounts
-     don't have org-level/fleet-wide secrets. Provision a **per-repo**
-     `TS_AUTHKEY` secret on each repo under this account that adopts the
-     action (`gh secret set TS_AUTHKEY -R ViperJuice/<repo>`). This is the
+     don't have org-level/fleet-wide secrets. Provision **per-repo**
+     `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` secrets on each repo under this
+     account that adopts the action (`gh secret set ... -R ViperJuice/<repo>`). This is the
      one owner where "adopt by reference" still means a manual secret step
      per repo.
 3. **The shared `tag:ci-gp` ACL grant** (or your own tag) already wired on
