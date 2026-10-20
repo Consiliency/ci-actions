@@ -1,0 +1,2 @@
+SYNTHETIC PUBLIC SAFE REHEARSAL preb0-fallback
+No production merge, release, OIDC, secrets or registry writes.
