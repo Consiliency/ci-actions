@@ -1,0 +1,29 @@
+name: PMCP validation concurrency event rehearsal
+'on':
+  workflow_dispatch: {}
+  push:
+    branches:
+    - test/pmcp-ci-20261020-concurrency-*
+  pull_request:
+    branches:
+    - test/pmcp-ci-20261020-concurrency-base
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}-{2}', github.event_name, github.sha, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  bounded-event-window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Synthetic public event window; no checkout or publication
+      run: 'test "$GITHUB_REPOSITORY" = Consiliency/ci-actions
+
+        test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+
+        printf "event=%s run=%s sha=%s\n" "$GITHUB_EVENT_NAME" "$GITHUB_RUN_ID" "$GITHUB_SHA"
+
+        sleep 120
+
+        '
