@@ -1,0 +1,80 @@
+name: PMCP pre-B0 cancellation dependent
+'on':
+  pull_request:
+    branches:
+    - test/pmcp-ci-20261020-preb0-dependent-base
+permissions:
+  contents: read
+jobs:
+  hold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Bounded synthetic cancellation window
+      run: 'echo "Synthetic check semantics only; no PMCP suite claim"
+
+        sleep 180
+
+        '
+  ci-scope:
+    needs:
+    - hold
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+      proof_valid: ${{ steps.scope.outputs.proof_valid }}
+    steps:
+    - id: scope
+      run: 'echo "mode=FULL" >> "$GITHUB_OUTPUT"
+
+        echo "proof_valid=false" >> "$GITHUB_OUTPUT"
+
+        '
+  install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  min-version-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  changelog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  release-diff-ack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - run: echo "Synthetic required context ready"
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version:
+        - '3.12'
+    steps:
+    - run: echo "Synthetic test context only; no PMCP suite executed"
+    needs:
+    - ci-scope
+    if: ${{ !cancelled() && (true || vars.PMCP_CI_FORCE_FULL != '' || needs.ci-scope.result != 'success' || needs.ci-scope.outputs.mode != 'ASSET_V1' || needs.ci-scope.outputs.proof_valid != 'true') }}
