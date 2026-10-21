@@ -1,0 +1,90 @@
+name: PMCP nonpublishing exact-source transfer
+'on':
+  pull_request:
+    branches:
+    - test/pmcp-ci-20261020-transfer-refresh-3392f2a-base
+permissions:
+  contents: read
+env:
+  EXPECTED_SOURCE: 3392f2a7918c4b61fd39cc57acf559a5d993ab4a
+  UV_PYTHON: '3.12'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      bundle_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+    - name: Require named sandbox pull request
+      env:
+        EXPECTED_SANDBOX: Consiliency/ci-actions
+      run: 'test "$GITHUB_REPOSITORY" = "$EXPECTED_SANDBOX"
+
+        test "$GITHUB_EVENT_NAME" = pull_request
+
+        test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+
+        '
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: Consiliency/pmcp
+        ref: 3392f2a7918c4b61fd39cc57acf559a5d993ab4a
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        node-version: '22'
+    - name: Verify Node and npm environment
+      run: "test \"$(node -p \"process.versions.node.split('.')[0]\")\" = 22\nnpm_version=$(npm --version)\ncase \"$npm_version\" in\n  10.*|11.*) ;;\n  *) echo 'Unsupported npm major for identity validation'; exit 1 ;;\nesac\nnode --version\nnpm --version\n"
+    - name: Install uv
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+      with:
+        version: 0.13.1
+        enable-cache: false
+    - name: Set up Python
+      run: uv python install 3.12
+    - name: Install dependencies
+      run: uv sync --locked --all-extras --python 3.12
+    - name: Build and verify rehearsal archives
+      run: uv run --locked python scripts/release_artifacts.py --rehearsal --bundle .release-bundle
+    - name: Upload artifacts
+      id: upload
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: release-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .release-bundle/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 14
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Require named sandbox pull request
+      env:
+        EXPECTED_SANDBOX: Consiliency/ci-actions
+      run: 'test "$GITHUB_REPOSITORY" = "$EXPECTED_SANDBOX"
+
+        test "$GITHUB_EVENT_NAME" = pull_request
+
+        test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+
+        '
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: Consiliency/pmcp
+        ref: 3392f2a7918c4b61fd39cc57acf559a5d993ab4a
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Download artifacts
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        artifact-ids: ${{ needs.build.outputs.bundle_id }}
+        path: .release-bundle/
+        merge-multiple: true
+    - name: Verify transferred bytes and production refusal
+      run: "python3 -I -B - <<'REHEARSAL_PY'\n\"\"\"NONPUBLISHING rehearsal: verify transferred bytes and require real release refusals.\"\"\"\nfrom __future__ import annotations\nimport hashlib\nimport importlib.util\nimport json\nimport os\nfrom pathlib import Path\nimport subprocess\nimport sys\n\n\ndef verify_transferred(bundle: Path, sha: str, tree: str, run_id: str, attempt: str) -> dict:\n    if bundle.is_symlink() or {p.name for p in bundle.iterdir()} != {'dist', 'manifest.json'}:\n        raise ValueError('unexpected transferred bundle entries')\n    manifest_path = bundle / 'manifest.json'\n    if manifest_path.is_symlink() or manifest_path.stat().st_size > 65536:\n        raise ValueError('invalid transferred manifest')\n    m = json.loads(manifest_path.read_text())\n    expected = {'schema': 1, 'purpose': 'rehearsal', 'sha': sha, 'tree': tree, 'run_id': run_id, 'attempt': attempt}\n    if any(m.get(k) != v for k, v in expected.items()):\n        raise ValueError('transferred\
+        \ identity mismatch')\n    version = m['version']\n    names = {f'pmcp-{version}-py3-none-any.whl', f'pmcp-{version}.tar.gz'}\n    dist = bundle / 'dist'\n    if dist.is_symlink() or set(m['archives']) != names or {p.name for p in dist.iterdir()} != names:\n        raise ValueError('transferred archive set mismatch')\n    for path in dist.iterdir():\n        metadata = m['archives'][path.name]\n        if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 100 * 1024 * 1024 or path.stat().st_size != metadata['bytes']:\n            raise ValueError('transferred archive size/type mismatch')\n        if hashlib.sha256(path.read_bytes()).hexdigest() != metadata['sha256']:\n            raise ValueError('transferred archive hash mismatch')\n    return m\n\n\ndef main() -> None:\n    source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n    tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()\n    if source\
+        \ != os.environ['EXPECTED_SOURCE'] or os.environ['GITHUB_EVENT_NAME'] != 'pull_request':\n        raise ValueError('rehearsal execution identity mismatch')\n    if os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL'):\n        raise ValueError('rehearsal must not have OIDC capability')\n    bundle = Path('.release-bundle')\n    m = verify_transferred(bundle, source, tree, os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'])\n    # Production source remains unmodified. Real pull_request must fail the\n    # actual CLI before any release path; rehearsal purpose independently fails verify().\n    result = subprocess.run([sys.executable, '-I', '-B', 'scripts/verify_release_bundle.py', str(bundle)], capture_output=True, text=True, timeout=30)\n    if result.returncode == 0 or 'only tag releases can publish' not in result.stderr:\n        raise ValueError('production event refusal was not demonstrated')\n    spec = importlib.util.spec_from_file_location('actual_release_verifier', 'scripts/verify_release_bundle.py')\n\
+        \    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    try:\n        module.verify(bundle)\n    except ValueError as exc:\n        if str(exc) != 'not a verified release bundle':\n            raise\n    else:\n        raise ValueError('production purpose refusal was not demonstrated')\n    print(json.dumps({'standing': 'NONPUBLISHING_TRANSFER_ONLY', 'source': source, 'run_id': os.environ['GITHUB_RUN_ID'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'archives': m['archives'], 'event_refused': True, 'rehearsal_purpose_refused': True, 'publisher_action_present': False, 'publication_authorized': False}, sort_keys=True))\n\nif __name__ == '__main__':\n    main()\n\nREHEARSAL_PY\n"
