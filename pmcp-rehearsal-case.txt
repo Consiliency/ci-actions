@@ -1,0 +1,2 @@
+SYNTHETIC PUBLIC SAFE REHEARSAL transfer
+No production merge, release, OIDC, secrets or registry writes.
